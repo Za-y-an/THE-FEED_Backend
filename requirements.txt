@@ -7,3 +7,4 @@ passlib[bcrypt]
 bcrypt
 python-jose[cryptography]
 PyJWT
+pydantic-settings
