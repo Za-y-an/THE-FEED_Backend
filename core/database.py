@@ -1,15 +1,17 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import DeclarativeBase
-from core.config import settings
+import os
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
-
-AsyncSessionLocal = async_sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
+# It will look for the Koyeb environment variable first. 
+# If it fails, it defaults to your local database for testing.
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", 
+    "postgresql+asyncpg://postgres:yourlocalpassword@localhost/the_feed"
 )
 
-class Base(DeclarativeBase):
-    pass
+engine = create_async_engine(DATABASE_URL, echo=False)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+Base = declarative_base()
 
 async def get_db():
     async with AsyncSessionLocal() as session:

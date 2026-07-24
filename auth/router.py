@@ -20,8 +20,8 @@ def send_reset_email(to_email: str, token: str):
     """
     Sends the reset token to the user's email using a live Gmail SMTP server.
     """
-    sender_email = "ahaduzzaman.chd@gmail.com"  
-    sender_password = "jkaxtyuefbcgvkam" # Spaces removed for standard SMTP formatting
+    sender_email = "team.feed.no.reply@gmail.com"  
+    sender_password = "opxlfplqjaufrfco" # Spaces removed for standard SMTP formatting
 
     msg = MIMEMultipart()
     msg['From'] = sender_email
@@ -44,6 +44,7 @@ def send_reset_email(to_email: str, token: str):
         print(f"Failed to send email: {e}")
 # -----------------------------
 
+# auth/router.py
 @router.post("/register", response_model=TokenResponse)
 async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == user_data.email))
@@ -61,6 +62,7 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
     new_user = User(
         email=user_data.email,
         username=final_username,
+        display_name=user_data.display_name, # <--- THIS IS THE MISSING FIX!
         hashed_password=get_password_hash(user_data.password)
     )
     

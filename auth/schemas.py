@@ -3,6 +3,7 @@ from typing import Optional
 
 class UserRegister(BaseModel):
     email: EmailStr
+    display_name: str = Field(min_length=1, description="The user's real or display name")
     password: str = Field(min_length=6, description="Password must be at least 6 characters")
     username: Optional[str] = Field(default=None, description="Optional. Auto-generated if blank.")
 
