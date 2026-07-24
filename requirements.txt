@@ -6,3 +6,4 @@ pydantic[email]
 passlib[bcrypt]
 bcrypt
 python-jose[cryptography]
+PyJWT
