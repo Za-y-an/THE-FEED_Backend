@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
+from datetime import datetime # <-- Added this import
 
 from core.database import get_db
 from users.models import User
@@ -21,12 +22,13 @@ async def create_post(
     new_post = Post(
         user_id=current_user.id,
         content=post_data.content,
-        emoji_tag=post_data.emoji_tag
+        emoji_tag=post_data.emoji_tag,
+        created_at=datetime.utcnow() # <-- FIX: Explicitly forcing a naive UTC timestamp
     )
     db.add(new_post)
     await db.commit()
     await db.refresh(new_post)
-    return {"message": "Post created successfully", "post_id": new_post.id}
+    return {"message": "Post created successfully", "post_id": str(new_post.id)}
 
 @router.post("/{post_id}/react")
 async def react_to_post(
@@ -100,7 +102,7 @@ async def get_feed(db: AsyncSession = Depends(get_db)):
         comments = await db.execute(select(func.count()).select_from(Comment).where(Comment.post_id == post.id))
         
         feed.append(PostResponse(
-            id=post.id,
+            id=str(post.id),
             content=post.content,
             emoji_tag=post.emoji_tag,
             created_at=post.created_at,
