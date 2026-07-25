@@ -19,9 +19,13 @@ from auth.schemas import UserRegister, UserLogin, TokenResponse, ForgotPassword,
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+# auth/router.py (Replace only the send_email_helper function)
+
 def send_email_helper(to_email: str, subject: str, body: str):
     sender_email = settings.EMAIL_SENDER  
     sender_password = settings.EMAIL_PASSWORD 
+    
+    print(f"DEBUG: Attempting to connect to SMTP for {to_email}...", flush=True)
     
     msg = MIMEMultipart()
     msg['From'] = sender_email
@@ -35,9 +39,9 @@ def send_email_helper(to_email: str, subject: str, body: str):
         server.login(sender_email, sender_password)
         server.sendmail(sender_email, to_email, msg.as_string())
         server.quit()
+        print(f"SUCCESS: Email successfully sent to {to_email}", flush=True)
     except Exception as e:
-        # This forces Render to print the exact error to your logs immediately
-        logging.error(f"CRITICAL EMAIL FAILURE: {str(e)}")
+        print(f"CRITICAL EMAIL FAILURE: {str(e)}", flush=True)
 
 async def check_lockout(user: User):
     now = datetime.now(timezone.utc)
