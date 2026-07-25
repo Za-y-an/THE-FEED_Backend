@@ -2,6 +2,7 @@
 import random
 import uuid
 import smtplib
+import logging
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -21,11 +22,13 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 def send_email_helper(to_email: str, subject: str, body: str):
     sender_email = settings.EMAIL_SENDER  
     sender_password = settings.EMAIL_PASSWORD 
+    
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = to_email
     msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain'))
+    
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -33,7 +36,8 @@ def send_email_helper(to_email: str, subject: str, body: str):
         server.sendmail(sender_email, to_email, msg.as_string())
         server.quit()
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        # This forces Render to print the exact error to your logs immediately
+        logging.error(f"CRITICAL EMAIL FAILURE: {str(e)}")
 
 async def check_lockout(user: User):
     now = datetime.now(timezone.utc)
