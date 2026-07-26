@@ -18,10 +18,8 @@ from auth.schemas import UserRegister, UserLogin, TokenResponse, ForgotPassword,
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 # ==========================================
-# GOOGLE APPS SCRIPT EMAIL WEBHOOK
+# EMAIL HELPER
 # ==========================================
-GOOGLE_EMAIL_WEBHOOK = "https://script.google.com/macros/s/AKfycbwUglPgVV2W95HPDxsIXASuriCWTqMpO_p7-S3Yr5Sc843GeWMJVhf6uR8nuccZnG4E/exec"
-
 async def send_email_helper(to_email: str, subject: str, body: str):
     """
     Sends transactional emails via Google Apps Script (Port 443 HTTPS).
@@ -37,7 +35,9 @@ async def send_email_helper(to_email: str, subject: str, body: str):
     async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
             print(f"DEBUG: Firing HTTP request to Google Apps Script for {to_email}...", flush=True)
-            response = await client.post(GOOGLE_EMAIL_WEBHOOK, json=payload)
+            
+            # Pulls the Webhook URL directly from your environment variables
+            response = await client.post(settings.GOOGLE_EMAIL_WEBHOOK, json=payload)
             
             if response.status_code == 200:
                 print(f"SUCCESS: Email instantly delivered to {to_email} via Google Apps Script", flush=True)
