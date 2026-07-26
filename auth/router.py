@@ -1,15 +1,13 @@
 # auth/router.py
 import random
 import uuid
-import smtplib
 import logging
 from datetime import datetime, timedelta, timezone
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
+import httpx
 
 from core.database import get_db
 from core.config import settings
@@ -19,30 +17,39 @@ from auth.schemas import UserRegister, UserLogin, TokenResponse, ForgotPassword,
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# auth/router.py (Replace only the send_email_helper function)
+# ==========================================
+# GOOGLE APPS SCRIPT EMAIL WEBHOOK
+# ==========================================
+GOOGLE_EMAIL_WEBHOOK = "https://script.google.com/macros/s/AKfycbwUglPgVV2W95HPDxsIXASuriCWTqMpO_p7-S3Yr5Sc843GeWMJVhf6uR8nuccZnG4E/exec"
 
-def send_email_helper(to_email: str, subject: str, body: str):
-    sender_email = settings.EMAIL_SENDER  
-    sender_password = settings.EMAIL_PASSWORD 
+async def send_email_helper(to_email: str, subject: str, body: str):
+    """
+    Sends transactional emails via Google Apps Script (Port 443 HTTPS).
+    Bypasses Render's outbound SMTP port blocking entirely.
+    """
+    payload = {
+        "to": to_email,
+        "subject": subject,
+        "body": body
+    }
     
-    print(f"DEBUG: Attempting to connect to SMTP for {to_email}...", flush=True)
-    
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
-    
-    try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, to_email, msg.as_string())
-        server.quit()
-        print(f"SUCCESS: Email successfully sent to {to_email}", flush=True)
-    except Exception as e:
-        print(f"CRITICAL EMAIL FAILURE: {str(e)}", flush=True)
+    # follow_redirects=True is strictly required for Google Apps Script redirects
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        try:
+            print(f"DEBUG: Firing HTTP request to Google Apps Script for {to_email}...", flush=True)
+            response = await client.post(GOOGLE_EMAIL_WEBHOOK, json=payload)
+            
+            if response.status_code == 200:
+                print(f"SUCCESS: Email instantly delivered to {to_email} via Google Apps Script", flush=True)
+            else:
+                print(f"CRITICAL EMAIL FAILURE: {response.text}", flush=True)
+        except Exception as e:
+            print(f"CRITICAL EMAIL FAILURE: {str(e)}", flush=True)
 
+
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
 async def check_lockout(user: User):
     now = datetime.now(timezone.utc)
     if user.lockout_until and now < user.lockout_until:
@@ -61,6 +68,10 @@ async def handle_failed_otp(user: User, db: AsyncSession):
     await db.commit()
     raise HTTPException(status_code=400, detail=f"Invalid code. {3 - user.failed_otp_attempts} attempts remaining.")
 
+
+# ==========================================
+# ROUTE ENDPOINTS
+# ==========================================
 @router.post("/register")
 async def register(user_data: UserRegister, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == user_data.email))
@@ -88,9 +99,14 @@ async def register(user_data: UserRegister, background_tasks: BackgroundTasks, d
         raise HTTPException(status_code=400, detail="Username already taken")
 
     new_user = User(
-        email=user_data.email, username=final_username, display_name=user_data.display_name,
-        hashed_password=get_password_hash(user_data.password), is_verified=False,
-        verification_otp=otp, otp_expires_at=expires_at, failed_otp_attempts=0
+        email=user_data.email, 
+        username=final_username, 
+        display_name=user_data.display_name,
+        hashed_password=get_password_hash(user_data.password), 
+        is_verified=False,
+        verification_otp=otp, 
+        otp_expires_at=expires_at, 
+        failed_otp_attempts=0
     )
     db.add(new_user)
     await db.commit()
