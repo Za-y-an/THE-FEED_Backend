@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 import httpx
 
-from core.database import get_db
+from core.database import get_db, engine, Base
 from core.config import settings
 from core.security import get_password_hash, verify_password, create_access_token
 from users.models import User
@@ -20,31 +20,20 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 # EMAIL HELPER
 # ==========================================
 async def send_email_helper(to_email: str, subject: str, body: str):
-    """
-    Sends transactional emails via Google Apps Script (Port 443 HTTPS).
-    Bypasses Render's outbound SMTP port blocking entirely.
-    """
     payload = {
         "to": to_email,
         "subject": subject,
         "body": body
     }
-    
-    # follow_redirects=True is strictly required for Google Apps Script redirects
     async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
-            print(f"DEBUG: Firing HTTP request to Google Apps Script for {to_email}...", flush=True)
-            
-            # Pulls the Webhook URL directly from your environment variables
             response = await client.post(settings.GOOGLE_EMAIL_WEBHOOK, json=payload)
-            
             if response.status_code == 200:
-                print(f"SUCCESS: Email instantly delivered to {to_email} via Google Apps Script", flush=True)
+                print(f"SUCCESS: Email delivered to {to_email}", flush=True)
             else:
                 print(f"CRITICAL EMAIL FAILURE: {response.text}", flush=True)
         except Exception as e:
             print(f"CRITICAL EMAIL FAILURE: {str(e)}", flush=True)
-
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -58,7 +47,6 @@ async def check_lockout(user: User):
         user.lockout_until = None
         user.failed_otp_attempts = 0
 
-
 async def handle_failed_otp(user: User, db: AsyncSession):
     user.failed_otp_attempts += 1
     if user.failed_otp_attempts >= 3:
@@ -68,25 +56,39 @@ async def handle_failed_otp(user: User, db: AsyncSession):
     await db.commit()
     raise HTTPException(status_code=400, detail=f"Invalid code. {3 - user.failed_otp_attempts} attempts remaining.")
 
-
 # ==========================================
 # ROUTE ENDPOINTS
 # ==========================================
 @router.post("/register")
 async def register(user_data: UserRegister, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    # Check if the email already exists
-    result = await db.execute(select(User).where(User.email == user_data.email))
-    existing_user = result.scalars().first()
+    # 1. Attempt to query the database to see if the table exists
+    try:
+        result = await db.execute(select(User).where(User.email == user_data.email))
+        existing_user = result.scalars().first()
+        table_exists = True
+    except Exception as e:
+        # If the query crashes because the table is missing, create it instantly
+        if "relation" in str(e).lower() or "does not exist" in str(e).lower():
+            await db.rollback() 
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all) 
+            existing_user = None
+            table_exists = False
+        else:
+            raise e 
 
     otp = str(random.randint(100000, 999999))
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=90)
     body = f"Welcome to THE FEED. Your verification code is:\n\n{otp}\n\nThis code expires in 1 minute 30 seconds."
 
-    if existing_user:
-        if not existing_user.is_verified:
-            # Ensure the newly requested username isn't already taken by ANOTHER user
+    # 2. If the table exists, process collision logic based ONLY on VERIFIED accounts
+    if table_exists and existing_user:
+        if existing_user.is_verified:
+            raise HTTPException(status_code=400, detail="Email already registered and verified")
+        else:
+            # Check if the requested username is taken by ANOTHER VERIFIED user
             user_check = await db.execute(
-                select(User).where(User.username == user_data.username, User.id != existing_user.id)
+                select(User).where(User.username == user_data.username, User.id != existing_user.id, User.is_verified == True)
             )
             if user_check.scalars().first():
                 raise HTTPException(status_code=400, detail="Username already taken")
@@ -104,14 +106,13 @@ async def register(user_data: UserRegister, background_tasks: BackgroundTasks, d
             background_tasks.add_task(send_email_helper, existing_user.email, "THE FEED - Verification Code", body)
             return {"message": "Account exists but is unverified. Updated details and sent a new OTP."}
 
-        raise HTTPException(status_code=400, detail="Email already registered and verified")
+    # 3. If table existed, verify the username isn't taken by ANY verified user before creating new user
+    if table_exists:
+        user_result = await db.execute(select(User).where(User.username == user_data.username, User.is_verified == True))
+        if user_result.scalars().first():
+            raise HTTPException(status_code=400, detail="Username already taken")
 
-    # Brand new registration flow - check if username is globally taken
-    user_result = await db.execute(select(User).where(User.username == user_data.username))
-    if user_result.scalars().first():
-        raise HTTPException(status_code=400, detail="Username already taken")
-
-    # Create the user directly with the provided schema data
+    # 4. Brand new registration flow (Executes if table was just created OR if no collisions were found)
     new_user = User(
         email=user_data.email, 
         username=user_data.username, 
@@ -128,57 +129,45 @@ async def register(user_data: UserRegister, background_tasks: BackgroundTasks, d
     background_tasks.add_task(send_email_helper, new_user.email, "THE FEED - Verification Code", body)
     return {"message": "Registration successful. Please verify your email with the OTP sent."}
 
-
 @router.post("/verify-otp", response_model=TokenResponse)
 async def verify_otp(data: VerifyOTP, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalars().first()
-
-    if not user:
-        raise HTTPException(status_code=400, detail="User not found")
-
+    if not user: raise HTTPException(status_code=400, detail="User not found")
     await check_lockout(user)
-
+    
     now = datetime.now(timezone.utc)
     if user.otp_expires_at and now > user.otp_expires_at:
         raise HTTPException(status_code=400, detail="OTP has expired. Register again for a new code.")
 
-    if user.verification_otp != data.otp:
-        await handle_failed_otp(user, db)
+    if user.verification_otp != data.otp: await handle_failed_otp(user, db)
 
     user.is_verified = True
     user.verification_otp = None
     user.otp_expires_at = None
     user.failed_otp_attempts = 0
     await db.commit()
-
     access_token = create_access_token(data={"sub": user.id})
     return {"access_token": access_token, "token_type": "bearer", "username": user.username}
-
 
 @router.post("/login", response_model=TokenResponse)
 async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == user_data.email))
     user = result.scalars().first()
-
     if not user or not verify_password(user_data.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
-        
     if not user.is_verified:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email not verified. Register again to get a new code.")
 
     access_token = create_access_token(data={"sub": user.id})
     return {"access_token": access_token, "token_type": "bearer", "username": user.username}
 
-
 @router.post("/forgot-password")
 async def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     query = select(User).where(or_(User.email == data.identifier, User.username == data.identifier))
     result = await db.execute(query)
     user = result.scalars().first()
-
-    if not user:
-        return {"message": "If an account matches that information, a reset token has been sent."}
+    if not user: return {"message": "If an account matches that information, a reset token has been sent."}
 
     otp = str(random.randint(100000, 999999))
     user.reset_otp = otp
@@ -191,29 +180,23 @@ async def forgot_password(data: ForgotPassword, background_tasks: BackgroundTask
     background_tasks.add_task(send_email_helper, user.email, "THE FEED - Password Reset Code", body)
     return {"message": "If an account matches that information, a reset token has been sent."}
 
-
 @router.post("/reset-password")
 async def reset_password(data: ResetPassword, db: AsyncSession = Depends(get_db)):
     query = select(User).where(or_(User.email == data.identifier, User.username == data.identifier))
     result = await db.execute(query)
     user = result.scalars().first()
-
-    if not user:
-        raise HTTPException(status_code=400, detail="Invalid account")
+    if not user: raise HTTPException(status_code=400, detail="Invalid account")
 
     await check_lockout(user)
-
     now = datetime.now(timezone.utc)
     if user.otp_expires_at and now > user.otp_expires_at:
         raise HTTPException(status_code=400, detail="Reset code has expired. Request a new one.")
 
-    if user.reset_otp != data.otp:
-        await handle_failed_otp(user, db)
+    if user.reset_otp != data.otp: await handle_failed_otp(user, db)
 
     user.hashed_password = get_password_hash(data.new_password)
     user.reset_otp = None 
     user.otp_expires_at = None
     user.failed_otp_attempts = 0
     await db.commit()
-
     return {"message": "Password updated successfully"}

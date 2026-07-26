@@ -1,23 +1,13 @@
+# main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-
-from core.database import engine, Base
 
 # Import all routers
 from auth.router import router as auth_router
 from posts.router import router as posts_router
 from users.router import router as users_router
 
-# Lifespan context manager to create database tables on startup
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        # Auto-generates tables based on our models
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-
-app = FastAPI(title="THE FEED API", lifespan=lifespan)
+app = FastAPI(title="THE FEED API")
 
 # Add CORS Middleware so Flutter can communicate with this API
 app.add_middleware(
