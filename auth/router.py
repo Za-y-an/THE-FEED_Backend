@@ -1,6 +1,5 @@
 # auth/router.py
 import random
-import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -59,6 +58,7 @@ async def check_lockout(user: User):
         user.lockout_until = None
         user.failed_otp_attempts = 0
 
+
 async def handle_failed_otp(user: User, db: AsyncSession):
     user.failed_otp_attempts += 1
     if user.failed_otp_attempts >= 3:
@@ -74,6 +74,7 @@ async def handle_failed_otp(user: User, db: AsyncSession):
 # ==========================================
 @router.post("/register")
 async def register(user_data: UserRegister, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    # Check if the email already exists
     result = await db.execute(select(User).where(User.email == user_data.email))
     existing_user = result.scalars().first()
 
@@ -83,24 +84,37 @@ async def register(user_data: UserRegister, background_tasks: BackgroundTasks, d
 
     if existing_user:
         if not existing_user.is_verified:
+            # Ensure the newly requested username isn't already taken by ANOTHER user
+            user_check = await db.execute(
+                select(User).where(User.username == user_data.username, User.id != existing_user.id)
+            )
+            if user_check.scalars().first():
+                raise HTTPException(status_code=400, detail="Username already taken")
+
+            # Override unverified user record with the NEW details
+            existing_user.username = user_data.username
+            existing_user.display_name = user_data.display_name
+            existing_user.hashed_password = get_password_hash(user_data.password) 
             existing_user.verification_otp = otp
             existing_user.otp_expires_at = expires_at
             existing_user.failed_otp_attempts = 0
             existing_user.lockout_until = None
-            existing_user.hashed_password = get_password_hash(user_data.password) 
+
             await db.commit()
             background_tasks.add_task(send_email_helper, existing_user.email, "THE FEED - Verification Code", body)
-            return {"message": "Account exists but is unverified. New OTP sent."}
+            return {"message": "Account exists but is unverified. Updated details and sent a new OTP."}
+
         raise HTTPException(status_code=400, detail="Email already registered and verified")
 
-    final_username = user_data.username or f"user_{uuid.uuid4().hex[:8]}"
-    user_result = await db.execute(select(User).where(User.username == final_username))
+    # Brand new registration flow - check if username is globally taken
+    user_result = await db.execute(select(User).where(User.username == user_data.username))
     if user_result.scalars().first():
         raise HTTPException(status_code=400, detail="Username already taken")
 
+    # Create the user directly with the provided schema data
     new_user = User(
         email=user_data.email, 
-        username=final_username, 
+        username=user_data.username, 
         display_name=user_data.display_name,
         hashed_password=get_password_hash(user_data.password), 
         is_verified=False,
@@ -113,6 +127,7 @@ async def register(user_data: UserRegister, background_tasks: BackgroundTasks, d
 
     background_tasks.add_task(send_email_helper, new_user.email, "THE FEED - Verification Code", body)
     return {"message": "Registration successful. Please verify your email with the OTP sent."}
+
 
 @router.post("/verify-otp", response_model=TokenResponse)
 async def verify_otp(data: VerifyOTP, db: AsyncSession = Depends(get_db)):
@@ -140,6 +155,7 @@ async def verify_otp(data: VerifyOTP, db: AsyncSession = Depends(get_db)):
     access_token = create_access_token(data={"sub": user.id})
     return {"access_token": access_token, "token_type": "bearer", "username": user.username}
 
+
 @router.post("/login", response_model=TokenResponse)
 async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == user_data.email))
@@ -153,6 +169,7 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
 
     access_token = create_access_token(data={"sub": user.id})
     return {"access_token": access_token, "token_type": "bearer", "username": user.username}
+
 
 @router.post("/forgot-password")
 async def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
@@ -173,6 +190,7 @@ async def forgot_password(data: ForgotPassword, background_tasks: BackgroundTask
     body = f"Your password reset code is:\n\n{otp}\n\nThis code expires in 1 minute 30 seconds."
     background_tasks.add_task(send_email_helper, user.email, "THE FEED - Password Reset Code", body)
     return {"message": "If an account matches that information, a reset token has been sent."}
+
 
 @router.post("/reset-password")
 async def reset_password(data: ResetPassword, db: AsyncSession = Depends(get_db)):
